@@ -167,8 +167,8 @@ if __name__ == "__main__":
     q = torch.randn(batch_size, num_head, seqlen_q, head_dim, dtype=torch.bfloat16, device="cuda", requires_grad=False)
     k = torch.randn(batch_size, num_head, seqlen_kv, head_dim, dtype=torch.bfloat16, device="cuda", requires_grad=False)
     v = torch.randn(batch_size, num_head, seqlen_kv, head_dim, dtype=torch.bfloat16, device="cuda", requires_grad=False)
-
-    hidden_states = torch.empty(0,dtype=torch.bfloat16,device="cuda")
+    hidden_states = torch.randn(batch_size, num_head, seqlen_q, head_dim, dtype=torch.bfloat16, device="cuda", requires_grad=False)
+    output = torch.randn(batch_size, num_head, seqlen_q, head_dim, dtype=torch.bfloat16, device="cuda", requires_grad=False)
     
 
     for i in range(args.run_iter):
@@ -185,8 +185,9 @@ if __name__ == "__main__":
 
     elapsed_time_ms = start_event.elapsed_time(end_event)
     avg_time_ms = elapsed_time_ms / args.run_iter
-    gflops = (2*2*batch_size*num_head*head_dim*seqlen_q*seqlen_kv)/1000/1000/1000
-    mfu = gflops/avg_time_ms/args.hw_tflops*100
+    GFLOPs_theory = (2*2*batch_size*num_head*head_dim*seqlen_q*seqlen_kv)/1000/1000/1000
+    GFLOPS_real = GFLOPs_theory/avg_time_ms
+    mfu = GFLOPS_real/args.hw_tflops*100
     # mbu = batch_size*num_frames*sequence_length*in_channel + batch_size*num_frames*sequence_length*in_channel*out_channel
-    print(f"***{args.note}******** \n"
-        f"{q.shape}*{k.shape}\t time={avg_time_ms}ms, \t gflops={gflops} \t mfu={mfu}%")
+    print(f"***{args.note}******* \n"
+        f"{q.shape}*{k.shape}\t time={avg_time_ms}ms, \t GFLOPs theory={GFLOPs_theory:.4f} \t GFLOPS real={GFLOPS_real:.4f} \t mfu={mfu}%")
