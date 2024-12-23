@@ -104,7 +104,7 @@ if __name__ == "__main__":
     parser.add_argument("--run_iter", type=int, default=10)
     parser.add_argument("--warmup_iter", type=int, default=10)
     parser.add_argument("--hw_tflops", type=int, default=232)
-    parser.add_argument("--ops", type=str, default="gemm", help=" can choose gemm、 ffn、 tokenmerge")
+    parser.add_argument("--ops", type=str, default="gemm", help=" can choose gemm、 ffn")
     parser.add_argument("--note", type=str, default=None)
     args = parser.parse_args()
     # print(args)
@@ -122,10 +122,9 @@ if __name__ == "__main__":
 
     if args.ops == "gemm":
         model = GemmForward(in_channel, out_channel,bias=True)
-    elif args.ops == "ffn":
-        model = SwiGLUFeedForward(in_channel, out_channel,bias=True)
     else:
-        model = TokenMerge(in_channel, out_channel, num_attention_heads, attention_head_dim, dropout, cross_attention_tokens, cross_attention_dim)
+        model = SwiGLUFeedForward(in_channel, out_channel,bias=True)
+
     
     model.to(device="cuda", dtype=torch.bfloat16)
     x = torch.randn(batch_size, sequence_length, in_channel).to(device="cuda", dtype=torch.bfloat16)

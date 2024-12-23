@@ -10,15 +10,6 @@ from einops import rearrange
 from flash_attn import flash_attn_func, flash_attn_varlen_func
 from flash_attn.bert_padding import index_first_axis, pad_input
 
-if os.environ.get("TRAIN_MODE", "False") == "True":
-    from megatron.core import mpu
-    from deepspeed.sequence import SeqAllToAll4D
-
-from .cudnn_attention import cudnn_attn_check_capability, cudnn_attn_func
-from .downsampling import TokenMerge
-from .normalization import RMSNorm
-from .upsampling import TokenSplit
-
 
 class AttnProcessor2_0(nn.Module):
     r"""
@@ -35,34 +26,18 @@ class AttnProcessor2_0(nn.Module):
         token_merge_size: Optional[int] = None,
         inner_dim: int = 1152,
     ):
+        super().__init__()
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError("AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
-        super().__init__()
-
-        if token_merge_size is not None:
-            self.token_merge = TokenMerge(in_features=inner_dim, out_features=inner_dim, token_merge_size=token_merge_size)
-            self.token_split = TokenSplit(in_features=inner_dim, out_features=inner_dim, token_merge_size=token_merge_size)
-        else:
-            self.token_merge = None
-            self.token_split = None
-
-        if qk_norm:
-            self.q_norm = RMSNorm(embed_dim, eps=eps)
-            self.k_norm = RMSNorm(embed_dim, eps=eps)
-        else:
-            self.q_norm = None
-            self.k_norm = None
 
         self.use_flash_attn = use_flash_attn
-        if not hasattr(F, "scaled_dot_product_attention"):
-            raise ImportError("AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
+        self.use_cudnn_attn = use_cudnn_attn
         if torch.cuda.is_available() and torch.version.hip:
             self.flash_attn_max_head_dim = 128
         elif torch.cuda.is_available() and torch.version.cuda:
             self.flash_attn_max_head_dim = 256
         else:
             self.flash_attn_max_head_dim = None
-        self.use_cudnn_attn = use_cudnn_attn
 
     def _attn_varlen(self, query, key, value, crossattn_mask_kwargs=None, selfattn_mask_kwargs=None):
         assert crossattn_mask_kwargs != None or selfattn_mask_kwargs != None, "crossattn_mask_kwargs 和 selfattn_mask_kwargs不可同时为None"
@@ -112,17 +87,14 @@ class AttnProcessor2_0(nn.Module):
 
     def __call__(
         self,
-        attn: Attention,
         hidden_states: torch.FloatTensor,
-        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        query: torch.FloatTensor,
+        key: torch.FloatTensor,
+        value: torch.FloatTensor,
         attention_mask: Optional[torch.FloatTensor] = None,
-        temb: Optional[torch.FloatTensor] = None,
         scale: float = 1.0,
-        patch_resolution: Optional[Tuple[int, int, int]] = None,
         selfattn_mask_kwargs: Optional[dict] = None,
         crossattn_mask_kwargs: Optional[dict] = None,
-        rope: Optional[nn.Module] = None,
-        is_video_batch: bool = False,
         *args,
         **kwargs,
     ) -> torch.FloatTensor:
@@ -130,50 +102,7 @@ class AttnProcessor2_0(nn.Module):
             deprecation_message = "The `scale` argument is deprecated and will be ignored. Please remove it, as passing it will raise an error in the future. `scale` should directly be passed while calling the underlying pipeline component i.e., via `cross_attention_kwargs`."
             deprecate("scale", "1.0.0", deprecation_message)
 
-        residual = hidden_states
-        if attn.spatial_norm is not None:
-            hidden_states = attn.spatial_norm(hidden_states, temb)
-
-        input_ndim = hidden_states.ndim
-
-        if input_ndim == 4:
-            batch_size, channel, height, width = hidden_states.shape
-            hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
-
-        if self.token_merge is not None:
-            hidden_states, patch_resolution = self.token_merge(hidden_states, patch_resolution)
-
-        batch_size, sequence_length, _ = hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
-
-        if attn.group_norm is not None:
-            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
-
-        query = attn.to_q(hidden_states)
-
-        if encoder_hidden_states is None:
-            encoder_hidden_states = hidden_states
-        elif attn.norm_cross:
-            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
-
-        key = attn.to_k(encoder_hidden_states)
-        value = attn.to_v(encoder_hidden_states)
-
-        inner_dim = key.shape[-1]
-        head_dim = inner_dim // attn.heads
-
-        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-
-        if rope is not None:
-            query = rope.forward(query, patch_resolution)
-            key = rope.forward(key, patch_resolution)
-
-        if self.q_norm is not None:
-            query = self.q_norm(query)
-        if self.k_norm is not None:
-            key = self.k_norm(key)
-
+        batch_size, num_heads, sequence_length, head_dim = query.shape
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
         if self.use_flash_attn and query.dtype is not torch.float32 and query.shape[-1] <= self.flash_attn_max_head_dim:
@@ -184,44 +113,22 @@ class AttnProcessor2_0(nn.Module):
                 query = query.contiguous()
                 key = key.contiguous()
                 value = value.contiguous()
-                if self.use_cudnn_attn and cudnn_attn_check_capability(query, key, value, causal=False):
-                    hidden_states = cudnn_attn_func(query, key, value, causal=False)
+                if self.use_cudnn_attn:
+                    pass
                 else:
                     hidden_states = flash_attn_func(query, key, value, dropout_p=0.0, softmax_scale=None, causal=False)
             else:
                 hidden_states = self._attn_varlen(query, key, value, crossattn_mask_kwargs=crossattn_mask_kwargs, selfattn_mask_kwargs=selfattn_mask_kwargs)
-            hidden_states = hidden_states.transpose(1, 2)
         else:
             if attention_mask is not None:
-                attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+                attention_mask = Attention.prepare_attention_mask(attention_mask, sequence_length, batch_size)
                 # scaled_dot_product_attention expects attention_mask shape to be
                 # (batch, heads, source_length, target_length)
-                attention_mask = attention_mask.view(batch_size, attn.heads, -1, attention_mask.shape[-1])
+                attention_mask = attention_mask.view(batch_size, num_heads, -1, attention_mask.shape[-1])
 
             hidden_states = F.scaled_dot_product_attention(query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False)
-
-        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
-        hidden_states = hidden_states.to(query.dtype)
-        del query, key, value
-
-        # linear proj
-        hidden_states = attn.to_out[0](hidden_states)
-        # dropout
-        hidden_states = attn.to_out[1](hidden_states)
-
-        if self.token_split is not None:
-            hidden_states, patch_resolution = self.token_split(hidden_states, patch_resolution)
-
-        if input_ndim == 4:
-            hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
-
-        if attn.residual_connection:
-            hidden_states = hidden_states + residual
-
-        hidden_states = hidden_states / attn.rescale_output_factor
-
         return hidden_states
-
+ 
 
 if __name__ == "__main__":
     import argparse
@@ -229,39 +136,57 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--num_frames", type=int, default=77)
-    parser.add_argument("--height", type=int, default=36)
-    parser.add_argument("--width", type=int, default=26)
-    parser.add_argument("--in_channel", type=int, default=2880)
-    parser.add_argument("--out_channel", type=int, default=2880)
-    parser.add_argument("--num_attention_heads", type=int, default=40)
-    parser.add_argument("--attention_head_dim", type=int, default=72)
+    parser.add_argument("--seqlen_q", type=int, default=4680)
+    parser.add_argument("--seqlen_kv", type=int, default=4680)
+    parser.add_argument("--num_head", type=int, default=40)
+    parser.add_argument("--head_dim", type=int, default=72)
     parser.add_argument("--cross_attention_tokens", type=int, default=256)
-    parser.add_argument("--cross_attention_dim", type=int, default=4096)
     parser.add_argument("--output_root", type=str, default=None)
-    
+    parser.add_argument("--run_iter", type=int, default=10)
+    parser.add_argument("--warmup_iter", type=int, default=10)
+    parser.add_argument("--hw_tflops", type=int, default=165)
+    parser.add_argument("--note", type=str, default=None)
     args = parser.parse_args()
+
     # 定义输入参数
     batch_size = 2 if args.batch_size is None else int(args.batch_size)
-    num_frames = 20 if args.num_frames is None else int(args.num_frames)
-    sequence_length = args.height * args.width
-    in_channel = 2880 if args.in_channel is None else int(args.in_channel)
-    out_channel = 2880 if args.out_channel is None else int(args.out_channel)
-    num_attention_heads = 40 if args.num_attention_heads is None else int(args.num_attention_heads)
-    attention_head_dim = 72 if args.attention_head_dim is None else int(args.attention_head_dim)
-    dropout = 0.1
-    cross_attention_tokens = args.cross_attention_tokens
-    cross_attention_dim = args.cross_attention_dim
+    seqlen_q = 4680 if args.seqlen_q is None else int(args.seqlen_q)
+    seqlen_kv = 4680 if args.seqlen_kv is None else int(args.seqlen_kv)
+    num_head = 40 if args.num_head is None else int(args.num_head)
+    head_dim = 72 if args.head_dim is None else int(args.head_dim)
+    cross_attention_tokens = 256 if args.cross_attention_tokens is None else int(args.cross_attention_tokens)
+    output_root = args.output_root
 
     model = AttnProcessor2_0(
-        num_attention_heads=num_attention_heads,
-        attention_head_dim=attention_head_dim,
-        dropout=dropout,
-        cross_attention_dim=cross_attention_dim,
-        cross_attention_tokens=cross_attention_tokens,
+        use_flash_attn=False,
     )
     model.to(device="cuda", dtype=torch.bfloat16)
 
-    x = torch.randn(batch_size, num_frames*sequence_length, in_channel).to(device="cuda", dtype=torch.bfloat16)
-    y = model(x)
-    print(y.shape)
+    # 随机生成输入张量
+    attention_mask = torch.randint(0, 2, (batch_size, num_head, seqlen_q, seqlen_kv), dtype=torch.bfloat16, device="cuda", requires_grad=False)
+    q = torch.randn(batch_size, num_head, seqlen_q, head_dim, dtype=torch.bfloat16, device="cuda", requires_grad=False)
+    k = torch.randn(batch_size, num_head, seqlen_kv, head_dim, dtype=torch.bfloat16, device="cuda", requires_grad=False)
+    v = torch.randn(batch_size, num_head, seqlen_kv, head_dim, dtype=torch.bfloat16, device="cuda", requires_grad=False)
+
+    hidden_states = torch.empty(0,dtype=torch.bfloat16,device="cuda")
+    
+
+    for i in range(args.run_iter):
+        output = model(hidden_states,q, k, v)
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    
+    # Forward pass
+    start_event.record()
+    for i in range(args.run_iter):
+        output = model(hidden_states,q, k, v)
+    end_event.record()
+    torch.cuda.synchronize()
+
+    elapsed_time_ms = start_event.elapsed_time(end_event)
+    avg_time_ms = elapsed_time_ms / args.run_iter
+    gflops = (2*2*batch_size*num_head*head_dim*seqlen_q*seqlen_kv)/1000/1000/1000
+    mfu = gflops/avg_time_ms/args.hw_tflops*100
+    # mbu = batch_size*num_frames*sequence_length*in_channel + batch_size*num_frames*sequence_length*in_channel*out_channel
+    print(f"***{args.note}******** \n"
+        f"{q.shape}*{k.shape}\t time={avg_time_ms}ms, \t gflops={gflops} \t mfu={mfu}%")
