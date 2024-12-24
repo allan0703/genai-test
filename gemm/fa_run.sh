@@ -65,3 +65,24 @@ python pth_fa.py --batch_size 40 \
     --warmup_iter 10 \
     --hw_tflops 165 \
     --note "ca"
+
+python pth_fa.py --batch_size 2 \
+    --seqlen_q 256 \
+    --seqlen_kv 256 \
+    --num_head 64 \
+    --head_dim 64 \
+    --run_iter 10 \
+    --warmup_iter 10 \
+    --hw_tflops 165 \
+    --note "t5 encoder torch"
+
+python pth_fa.py --batch_size 2 \
+    --seqlen_q 256 \
+    --seqlen_kv 256 \
+    --num_head 64 \
+    --head_dim 64 \
+    --use_flash_attn \
+    --run_iter 10 \
+    --warmup_iter 10 \
+    --hw_tflops 165 \
+    --note "t5 encoder fa"

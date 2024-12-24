@@ -83,3 +83,44 @@ python pth_gemm_linear.py --batch_size 2 \
     --hw_tflops 165 \
     --ops gemm \
     --note "#text prompt dim 4096 to 2880, once a dit model"
+
+
+python pth_gemm_linear.py --batch_size 2 \
+    --sequence_length 256 \
+    --in_channel 4096 \
+    --out_channel 4096 \
+    --run_iter 10 \
+    --warmup_iter 10 \
+    --hw_tflops 165 \
+    --ops gemm \
+    --note "#text encoder gemm 1"
+
+python pth_gemm_linear.py --batch_size 2 \
+    --sequence_length 256 \
+    --in_channel 4096 \
+    --out_channel 4096 \
+    --run_iter 10 \
+    --warmup_iter 10 \
+    --hw_tflops 165 \
+    --ops gemm \
+    --note "#text encoder gemm 2"
+
+python pth_gemm_linear.py --batch_size 2 \
+    --sequence_length 256 \
+    --in_channel 4096 \
+    --out_channel 10240 \
+    --run_iter 10 \
+    --warmup_iter 10 \
+    --hw_tflops 165 \
+    --ops gemm \
+    --note "#text encoder gemm 3"
+
+python pth_gemm_linear.py --batch_size 2 \
+    --sequence_length 256 \
+    --in_channel 10240 \
+    --out_channel 4096 \
+    --run_iter 10 \
+    --warmup_iter 10 \
+    --hw_tflops 165 \
+    --ops gemm \
+    --note "#text encoder gemm 3"

@@ -19,10 +19,10 @@ text = [
 ]
 
 # 将文本编码为张量
-inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(device)
+inputs = tokenizer(text, return_tensors="pt", padding= "max_length", max_length = 256, truncation=True).to(device)
 start_event = torch.cuda.Event(enable_timing=True)
 end_event = torch.cuda.Event(enable_timing=True)
-
+torch.cuda.synchronize()
 start_event.record()
 # 前向传播，获取编码器输出
 with torch.no_grad():
