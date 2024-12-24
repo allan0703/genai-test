@@ -5,50 +5,6 @@ import torch.nn.functional as F
 import math
 from einops import rearrange
 
-class TokenMerge(nn.Module):
-    def __init__(self, in_features, out_features, token_merge_size=2):
-        super().__init__()
-        self.token_merge_size = token_merge_size
-        self.proj = nn.Linear(in_features * token_merge_size * token_merge_size, out_features, bias=False)
-
-    def _forward(self, x):
-        x = rearrange(x, "... f (h nh) (w nw) e -> ... f h w (nh nw e)", nh=self.token_merge_size, nw=self.token_merge_size)
-        x = self.proj(x)
-        return x
-
-    def forward(self, hidden_states, patch_resolution):
-        if isinstance(patch_resolution, list):
-            if not all(isinstance(res, tuple) for res in patch_resolution):
-                raise ValueError(f"patch_resolution should be a list of tuples, got {patch_resolution}")
-
-            batch_size, sequence_length, dim = hidden_states.shape
-            token_merge_sequence_length = sequence_length // (self.token_merge_size * self.token_merge_size)
-            output = torch.zeros(batch_size, token_merge_sequence_length, dim, device=hidden_states.device, dtype=hidden_states.dtype)
-            for i, resolution in enumerate(patch_resolution):
-                valid_sequence_length = math.prod(resolution)
-                valid_hidden_states = torch.narrow(hidden_states[i], dim=0, start=0, length=valid_sequence_length)
-                valid_hidden_states = rearrange(valid_hidden_states, "(f h w) d -> f h w d", f=resolution[0], h=resolution[1], w=resolution[2])
-                valid_hidden_states = self._forward(valid_hidden_states)
-                valid_hidden_states = rearrange(valid_hidden_states, "f h w d -> (f h w) d")
-                token_merge_valid_sequence_length = valid_sequence_length // (self.token_merge_size * self.token_merge_size)
-                output[i,:token_merge_valid_sequence_length] = valid_hidden_states
-                patch_resolution[i] = (resolution[0], resolution[1] // self.token_merge_size, resolution[2] // self.token_merge_size)
-
-            return output, patch_resolution
-        else:
-            if not isinstance(patch_resolution, tuple):
-                raise ValueError(f"patch_resolution should be a tuple, got {patch_resolution}")
-
-            hidden_states = rearrange(hidden_states, "b (f h w) d -> b f h w d", f=patch_resolution[0], h=patch_resolution[1], w=patch_resolution[2])
-            hidden_states = self._forward(hidden_states)
-            pf, ph, pw = hidden_states.shape[1:-1]
-            patch_resolution = (pf, ph, pw)
-            # assert patch_resolution == (patch_resolution[0], patch_resolution[1] // self.token_merge, patch_resolution[2] // self.token_merge)
-            hidden_states = rearrange(hidden_states, "b f h w d -> b (f h w) d")
-
-            return hidden_states, patch_resolution
-
-
 class SwiGLUFeedForward(nn.Module):
     def __init__(self, dim, inner_dim, mult=4.0, dropout=0.0, bias=False):
         super().__init__()
@@ -142,9 +98,9 @@ if __name__ == "__main__":
 
     elapsed_time_ms = start_event.elapsed_time(end_event)
     avg_time_ms = elapsed_time_ms / args.run_iter
-    gflops = 2*batch_size*sequence_length*in_channel*out_channel/1000/1000/1000
-    mfu = gflops/avg_time_ms/args.hw_tflops*100
+    GFLOPs_theory = 2*batch_size*sequence_length*in_channel*out_channel/1000/1000/1000
+    GFLOPS_real = GFLOPs_theory/avg_time_ms
+    mfu = GFLOPS_real/args.hw_tflops*100
     # mbu = batch_size*num_frames*sequence_length*in_channel + batch_size*num_frames*sequence_length*in_channel*out_channel
     print(f"***{args.note}****{args.ops}****** \n"
-        f"{x.shape}*{model.linear1.weight.shape}\t time={avg_time_ms}ms, \t gflops={gflops} \t mfu={mfu}%")
-
+        f"{x.shape}*{model.linear1.weight.shape}\t time={avg_time_ms}ms, \t GFLOPs theory={GFLOPs_theory:.4f} \t GFLOPS real={GFLOPS_real:.4f} \t mfu={mfu}%")

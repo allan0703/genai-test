@@ -141,6 +141,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_head", type=int, default=40)
     parser.add_argument("--head_dim", type=int, default=72)
     parser.add_argument("--cross_attention_tokens", type=int, default=256)
+    parser.add_argument("--use_flash_attn", type=bool, default=False)
     parser.add_argument("--output_root", type=str, default=None)
     parser.add_argument("--run_iter", type=int, default=10)
     parser.add_argument("--warmup_iter", type=int, default=10)
@@ -158,7 +159,7 @@ if __name__ == "__main__":
     output_root = args.output_root
 
     model = AttnProcessor2_0(
-        use_flash_attn=False,
+        use_flash_attn=args.use_flash_attn,
     )
     model.to(device="cuda", dtype=torch.bfloat16)
 
