@@ -141,14 +141,20 @@ if __name__ == "__main__":
     parser.add_argument("--num_head", type=int, default=40)
     parser.add_argument("--head_dim", type=int, default=72)
     parser.add_argument("--cross_attention_tokens", type=int, default=256)
-    parser.add_argument("--use_flash_attn", type=bool, default=False)
+    parser.add_argument("--use_flash_attn", action="store_true", help="Enable flash attention")
     parser.add_argument("--output_root", type=str, default=None)
     parser.add_argument("--run_iter", type=int, default=10)
     parser.add_argument("--warmup_iter", type=int, default=10)
     parser.add_argument("--hw_tflops", type=int, default=165)
     parser.add_argument("--note", type=str, default=None)
     args = parser.parse_args()
-
+    if args.use_flash_attn:
+        print("***** use flash attn")
+    else:
+        print("***** use pytorch scale dot product attention")
+        print(f"Flash Attention Enabled: {torch.backends.cuda.flash_sdp_enabled()}")
+        print(f"Math SDP Enabled: {torch.backends.cuda.math_sdp_enabled()}")
+        print(f"Mem Efficient SDP Enabled: {torch.backends.cuda.mem_efficient_sdp_enabled()}")
     # 定义输入参数
     batch_size = 2 if args.batch_size is None else int(args.batch_size)
     seqlen_q = 4680 if args.seqlen_q is None else int(args.seqlen_q)
