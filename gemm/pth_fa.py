@@ -178,7 +178,7 @@ if __name__ == "__main__":
     output = torch.randn(batch_size, num_head, seqlen_q, head_dim, dtype=torch.bfloat16, device="cuda", requires_grad=False)
     
 
-    for i in range(args.run_iter):
+    for i in range(args.warmup_iter):
         output = model(hidden_states,q, k, v)
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)

@@ -23,16 +23,19 @@ inputs = tokenizer(text, return_tensors="pt", padding= "max_length", max_length 
 start_event = torch.cuda.Event(enable_timing=True)
 end_event = torch.cuda.Event(enable_timing=True)
 torch.cuda.synchronize()
+with torch.no_grad():
+    for i in range(12):
+        outputs = model(**inputs)
 start_event.record()
 # 前向传播，获取编码器输出
 with torch.no_grad():
-    for i in range(10):
+    for i in range(15):
         outputs = model(**inputs)
 end_event.record()
 torch.cuda.synchronize()
 
 elapsed_time_ms = start_event.elapsed_time(end_event)
-avg_time_ms = elapsed_time_ms / 10
+avg_time_ms = elapsed_time_ms / 15
 # 获取最后一层的隐藏状态
 # 输出维度: [batch_size, sequence_length, hidden_size]
 hidden_states = outputs.last_hidden_state
